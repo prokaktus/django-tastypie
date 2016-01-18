@@ -178,3 +178,14 @@ class SlugBasedResourceTestCase(TestCaseWithFixture):
 
         # Make sure it's gone.
         self.assertRaises(SlugBasedNote.DoesNotExist, SlugBasedNote.objects.get, pk='first-post')
+
+
+class BundleTestCase(TestCaseWithFixture):
+    def test_bundle_repr(self):
+        # __repr__ should return string type (str in PY2 or unicode in PY3)
+        n1 = Note.objects.get(pk=1)
+
+        resource1 = NoteWithAnnotationsResource()
+        n1_bundle = resource1.build_bundle(obj=n1)
+        bundle_repr = repr(n1_bundle)
+        self.assertTrue(isinstance(bundle_repr, str))
