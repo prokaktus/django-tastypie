@@ -3,7 +3,7 @@ import copy
 import datetime
 from decimal import Decimal
 import json
-from mock import patch
+from mock import patch, Mock
 import time
 from unittest import skipIf
 
@@ -22,15 +22,24 @@ from django.utils.encoding import force_text
 from tastypie.authentication import BasicAuthentication
 from tastypie.authorization import Authorization
 from tastypie.bundle import Bundle
-from tastypie.exceptions import InvalidFilterError, InvalidSortError, ImmediateHttpResponse, BadRequest, NotFound
-from tastypie import fields
+from tastypie.exceptions import (
+    InvalidFilterError, InvalidSortError, ImmediateHttpResponse, BadRequest,
+    NotFound, UnsupportedFormat,
+)
+from tastypie import fields, http
 from tastypie.paginator import Paginator
-from tastypie.resources import Resource, ModelResource, ALL, ALL_WITH_RELATIONS, convert_post_to_put, convert_post_to_patch
+from tastypie.resources import (
+    Resource, ModelResource, ALL, ALL_WITH_RELATIONS, convert_post_to_put,
+    convert_post_to_patch,
+)
 from tastypie.serializers import Serializer
 from tastypie.throttle import CacheThrottle
 from tastypie.utils import aware_datetime, make_naive
 from tastypie.validation import FormValidation
-from core.models import Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter, MyDefaultPKModel, MyUUIDModel, MyRelatedUUIDModel
+from core.models import (
+    Note, NoteWithEditor, Subject, MediaBit, AutoNowNote, DateRecord, Counter,
+    MyDefaultPKModel, MyUUIDModel, MyRelatedUUIDModel,
+)
 from core.tests.mocks import MockRequest
 from core.utils import adjust_schema, SimpleHandler
 
@@ -3918,19 +3927,33 @@ class ModelResourceTestCase(TestCase):
 
     def test_obj_update(self):
         self.assertEqual(Note.objects.all().count(), 6)
+
         note = NoteResource()
         base_bundle = Bundle()
         note_obj = note.obj_get(base_bundle, pk=1)
         note_bundle = note.build_bundle(obj=note_obj)
         note_bundle = note.full_dehydrate(note_bundle)
         note_bundle.data['title'] = 'Whee!'
-        note.obj_update(note_bundle, pk=1)
+        with self.assertNumQueries(1):
+            note.obj_update(note_bundle, pk=1)
         self.assertEqual(Note.objects.all().count(), 6)
         numero_uno = Note.objects.get(pk=1)
         self.assertEqual(numero_uno.title, u'Whee!')
         self.assertEqual(numero_uno.slug, u'first-post')
         self.assertEqual(numero_uno.content, u'This is my very first post using my shiny new API. Pretty sweet, huh?')
         self.assertEqual(numero_uno.is_active, True)
+
+        # same setup as above, just need to test with '1' as the pk (str
+        # instead of int)
+        note = NoteResource()
+        base_bundle = Bundle()
+        note_obj = note.obj_get(base_bundle, pk=1)
+        note_bundle = note.build_bundle(obj=note_obj)
+        note_bundle = note.full_dehydrate(note_bundle)
+        note_bundle.data['title'] = 'Whee!'
+        with self.assertNumQueries(1):
+            note.obj_update(note_bundle, pk='1')
+        self.assertEqual(Note.objects.all().count(), 6)
 
         self.assertEqual(Note.objects.all().count(), 6)
         note = RelatedNoteResource()
@@ -4734,3 +4757,42 @@ class ObjectlessResourceTestCase(TestCase):
         bundle = resource.build_bundle()
 
         self.assertTrue(bundle is not None)
+
+
+class Handle500TestCase(TestCase):
+
+    def setUp(self):
+        self.resource = Resource()
+        self.resource.error_response = Mock()
+        self.request = Mock()
+
+    @override_settings(DEBUG=True)
+    @patch('tastypie.resources.traceback')
+    def test_unsupported_format_debug(self, traceback):
+        traceback.format_exception = Mock(return_value=[])
+
+        msg = 'Unknown format message'
+        exc = UnsupportedFormat(msg)
+
+        self.resource._handle_500(self.request, exc)
+
+        self.assertEqual(self.resource.error_response.call_count, 1)
+
+        args, kwargs = self.resource.error_response.call_args
+        self.assertEqual(args[1]['error_message'], msg)
+        self.assertEqual(kwargs['response_class'], http.HttpBadRequest)
+
+    @override_settings(DEBUG=False)
+    @patch('tastypie.resources.traceback')
+    def test_unsupported_format_no_debug(self, traceback):
+        traceback.format_exception = Mock(return_value=[])
+
+        msg = 'Unknown format message'
+        exc = UnsupportedFormat(msg)
+
+        self.resource._handle_500(self.request, exc)
+
+        self.assertEqual(self.resource.error_response.call_count, 1)
+
+        args, kwargs = self.resource.error_response.call_args
+        self.assertEqual(kwargs['response_class'], http.HttpBadRequest)
